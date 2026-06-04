@@ -1,0 +1,25 @@
+# 独立仓库：运行产物、数据、密钥（勿提交）
+.env
+.env.*
+!.env.example
+
+output/
+data/
+
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+
+.idea/
+*.iml
+
+.DS_Store
+Thumbs.db
+
+# 大文件（应在 data/ 或云端生成）
+*.parquet
+*.csv
+!data/**/.gitkeep

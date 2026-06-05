@@ -98,13 +98,13 @@ def shard_resource_path(data_dir: Path, shard: int) -> Path:
 
 
 def settings_for_msrt_shard(base: Settings, shard: int, out_subdir: Path | None = None) -> Settings:
+    """仅切换 MSRT 分片路径；不要求同号 MSResource（MSRT/Resource 分片可不同）。"""
     data_dir = resolve_data_dir(base)
     out = out_subdir or base.output_dir_v2021
     os.makedirs(out, exist_ok=True)
     return replace(
         base,
         msrt_path=shard_msrt_path(data_dir, shard),
-        ms_resource_path=shard_resource_path(data_dir, shard),
         output_dir_v2021=out,
     )
 
@@ -200,8 +200,8 @@ def concat_tables(frames: list[pd.DataFrame], label: str) -> pd.DataFrame:
 
 
 def count_msname_in_msrt_shard(settings: Settings, shard: int, msname: str) -> int:
-    s = settings_for_msrt_shard(settings, shard, settings.output_dir_v2021)
-    df, _ = read_msrt(str(s.msrt_path), s.msrt_nrows)
+    data_dir = resolve_data_dir(settings)
+    df, _ = read_msrt(str(shard_msrt_path(data_dir, shard)), settings.msrt_nrows)
     return int((df["msname"] == msname).sum())
 
 
@@ -330,6 +330,9 @@ def run_multi_shard_pipeline(
         wide_all = concat_tables(wide_frames, "MSRT wide")
 
     res_frames: list[pd.DataFrame] = []
+    if not res_ordered:
+        raise ValueError("resource_shards 不能为空")
+
     for shard in res_ordered:
         print(f"[INFO] ===== MSResource 分片 {shard} =====")
         sr = settings_for_resource_shard(settings, shard)

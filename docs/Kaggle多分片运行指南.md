@@ -43,51 +43,75 @@ assert os.path.isdir(CODE), f"路径不对: {CODE}, 目录内容: {os.listdir('/
 
 ---
 
-## 三、按片下载数据（不占本机磁盘）
+## 三、按片下载（tar 在临时盘，只把 CSV 放进 working）
 
-新建代码单元，**先跑约 4 小时窗（论文推荐档）**：
+`/kaggle/working` 仅约 **20GB**。tar 与解压必须在 **`/kaggle/tmp`**，只把 `*.csv` 移到 `DATA`。
+
+### 方式 A — 运行仓库脚本（已 clone `bank-analytics` 时）
 
 ```python
-import os
-import subprocess
+%run /kaggle/working/bank-analytics/scripts/kaggle_fetch_v2021.py
+```
+
+### 方式 B — 整段粘贴到一个单元格
+
+```python
+import shutil, subprocess
 from pathlib import Path
 
 OSS = "http://aliopentrace.oss-cn-beijing.aliyuncs.com/v2021MicroservicesTraces"
 DATA = Path("/kaggle/working/data/v2021")
-DATA.mkdir(parents=True, exist_ok=True)
+TMP  = Path("/kaggle/tmp/v2021_fetch")
+MSRT_SHARDS = list(range(8))
+RES_SHARDS  = list(range(4))
+MIN_CSV = 50_000_000
 
-# 约 4h：MSRT 8 片 + Resource 4 片（可改）
-MSRT_SHARDS = list(range(8))       # 0..7
-RES_SHARDS = list(range(4))        # 0..3
+def run(cmd, label):
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    if r.returncode:
+        raise RuntimeError(f"{label}: {(r.stderr or r.stdout)[:400]}")
 
-def fetch_shard(kind: str, i: int) -> Path:
-    """kind: MSRTQps 或 MSResource；返回 CSV 路径。"""
+def fetch(kind, i):
     name = f"{kind}_{i}"
     csv = DATA / f"{name}.csv"
+    if csv.is_file() and csv.stat().st_size >= MIN_CSV:
+        print(f"[skip] {name} {csv.stat().st_size/2**20:.1f}MB"); return
     if csv.is_file():
-        print(f"[skip] {csv}")
-        return csv
-    tar = DATA / f"{name}.tar.gz"
+        csv.unlink()
+    work = TMP / name
+    shutil.rmtree(work, ignore_errors=True)
+    work.mkdir(parents=True)
+    tar = work / f"{name}.tar.gz"
     url = f"{OSS}/{kind}/{name}.tar.gz"
-    print(f"[wget] {url}")
-    subprocess.run(["wget", "-c", "--tries=3", "-O", str(tar), url], check=True)
-    subprocess.run(["tar", "-xzf", str(tar), "-C", str(DATA)], check=True)
-    if not csv.is_file():
-        # 部分 tar 解压到当前目录，再挪一次
-        alt = Path(f"{name}.csv")
-        if alt.is_file():
-            alt.rename(csv)
-    if not csv.is_file():
-        raise FileNotFoundError(f"解压后未找到 {csv}，请检查 {list(DATA.glob('*'))}")
-    tar.unlink(missing_ok=True)  # 省 /kaggle/working 空间
-    return csv
+    print(f"[wget] {name}")
+    run(["wget","--tries=5","--timeout=600","-O",str(tar),url], "wget")
+    run(["gzip","-t",str(tar)], "gzip")
+    run(["tar","-xzf",str(tar),"-C",str(work)], "tar")
+    hits = list(work.rglob(f"{name}.csv"))
+    if not hits: raise FileNotFoundError(name)
+    shutil.move(str(hits[0]), str(csv))
+    shutil.rmtree(work, ignore_errors=True)
+    print(f"[ok] {csv.stat().st_size/2**20:.1f} MB")
 
+DATA.mkdir(parents=True, exist_ok=True)
+for t in DATA.glob("*.tar.gz"):
+    t.unlink()
 for i in MSRT_SHARDS:
-    fetch_shard("MSRTQps", i)
+    fetch("MSRTQps", i)
 for i in RES_SHARDS:
-    fetch_shard("MSResource", i)
+    fetch("MSResource", i)
+print("done:", sorted(p.name for p in DATA.glob("*.csv")))
+```
 
-print("CSV 列表:", sorted(p.name for p in DATA.glob("*.csv")))
+**检查是否下全**：
+
+```python
+DATA = Path("/kaggle/working/data/v2021")
+for kind, shards in [("MSRTQps", MSRT_SHARDS), ("MSResource", RES_SHARDS)]:
+    for i in shards:
+        p = DATA / f"{kind}_{i}.csv"
+        tag = "OK" if p.is_file() and p.stat().st_size >= MIN_CSV else "MISS"
+        print(tag, p.name, f"{p.stat().st_size/2**20:.1f} MB" if p.is_file() else "")
 ```
 
 > **更长窗口**：`MSRT_SHARDS = list(range(25))`、`RES_SHARDS = list(range(12))`（约 12h，易超 12 小时会话，建议分两个 Notebook 跑 0–11 与 12–24）。
@@ -229,7 +253,10 @@ RES_SHARDS = list(range(6, 12))
 
 | 问题 | 处理 |
 |------|------|
+| 检查全 MISS、目录为空 | ① 是否先跑过下载单元；② `DATA` 是否同为 `/kaggle/working/data/v2021`；③ 下载单元是否报错被忽略；④ Notebook **Internet: On** |
 | `wget` 失败 | 检查 Internet: On；重跑单元；OSS 偶尔慢，加 `--tries=5` |
+| 有 tar.gz 无 csv | tar 解压路径不对；改用 **§三 临时盘方案** |
+| `Wrote only N of M bytes` | **working 盘满**；tar 改在 `/kaggle/tmp`，只挪 csv |
 | OOM | 减少分片，如只 `MSRT 0..3`；保持 `DISK_ACCUMULATE=true` |
 | 分片 1+ merge 行数 0 | 跑完 shard0 后设 `MSNAME_FILTER` 再跑；`v2021-diagnose` 看各片行数 |
 | `/kaggle/working` 超 20GB | `fetch_shard` 里已 `tar.unlink`；勿在 working 里留多份 CSV 副本 |

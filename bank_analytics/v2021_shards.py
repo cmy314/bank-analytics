@@ -286,77 +286,89 @@ def run_multi_shard_pipeline(
     msrt_ordered = sorted(dict.fromkeys(msrt_shards))
     res_ordered = sorted(dict.fromkeys(resource_shards))
 
-    first_msrt = msrt_ordered[0]
-    s0 = settings_for_msrt_shard(settings, first_msrt, out / "shards" / f"msrt_{first_msrt}")
-    if settings.msname_filter:
-        s0 = replace(s0, msname_filter=settings.msname_filter, only_first_msname=False)
-    elif settings.only_first_msname:
-        s0 = replace(s0, only_first_msname=True)
-
     preset = has_preset_anchor(settings)
-    if preset:
-        print(f"[INFO] ===== MSRT 分片 {first_msrt}（已预设 anchor）=====")
-    else:
-        print(f"[INFO] ===== MSRT 分片 {first_msrt}: 确定 msname =====")
+    wide_parts = out / "_wide_parts"
+    res_parts = out / "_resource_parts"
+    wide_frames: list[pd.DataFrame] = []
 
-    wide0, _msname = build_wide_msrt(s0)
-    save_merged_v2021(wide0, s0.output_dir_v2021)
+    if settings.disk_accumulate:
+        for d in (wide_parts, res_parts):
+            if d.exists():
+                for f in d.glob("*.parquet"):
+                    f.unlink()
+
+    def _process_msrt_shard(shard: int, msname: str, *, label: str) -> None:
+        print(f"[INFO] ===== MSRT 分片 {shard} {label} =====")
+        sx = settings_for_msrt_shard(settings, shard, out / "shards" / f"msrt_{shard}")
+        sx = replace(sx, msname_filter=msname, only_first_msname=False)
+        try:
+            w, _ = build_wide_msrt(sx)
+        except ValueError as e:
+            print(f"[WARN] MSRT 分片 {shard}: {e}")
+            return
+        if w.empty:
+            print(f"[WARN] MSRT 分片 {shard} 在 msname 下无数据，跳过")
+            return
+        if settings.disk_accumulate:
+            _write_part_parquet(w, wide_parts / f"msrt_{shard}.parquet")
+        else:
+            wide_frames.append(w)
+        save_merged_v2021(w, sx.output_dir_v2021)
 
     if preset:
         anchor = ShardAnchor(
-            msname=settings.msname_filter or "",
-            msinstanceid=settings.msinstanceid_filter or "",
+            msname=str(settings.msname_filter).strip(),
+            msinstanceid=str(settings.msinstanceid_filter).strip(),
             msrt_shards=msrt_ordered,
             ms_resource_shards=res_ordered,
         )
+        diagnose_shard_coverage(settings, anchor.msname, msrt_ordered, res_ordered)
+        for shard in msrt_ordered:
+            _process_msrt_shard(shard, anchor.msname, label="（已预设 anchor）")
+        if settings.disk_accumulate:
+            print(f"[INFO] DISK_ACCUMULATE: wide 分片目录 {wide_parts}")
     else:
+        first_msrt = msrt_ordered[0]
+        s0 = settings_for_msrt_shard(settings, first_msrt, out / "shards" / f"msrt_{first_msrt}")
+        if settings.msname_filter:
+            s0 = replace(s0, msname_filter=settings.msname_filter, only_first_msname=False)
+        elif settings.only_first_msname:
+            s0 = replace(s0, only_first_msname=True)
+
+        print(f"[INFO] ===== MSRT 分片 {first_msrt}: 确定 msname =====")
+        wide0, _msname = build_wide_msrt(s0)
+        save_merged_v2021(wide0, s0.output_dir_v2021)
+
         anchor = discover_anchor_from_wide(wide0, msrt_ordered, res_ordered)
         if settings.msinstanceid_filter:
             anchor = replace(anchor, msinstanceid=settings.msinstanceid_filter)
         if settings.msname_filter:
             anchor = replace(anchor, msname=settings.msname_filter)
 
-    diagnose_shard_coverage(settings, anchor.msname, msrt_ordered, res_ordered)
+        diagnose_shard_coverage(settings, anchor.msname, msrt_ordered, res_ordered)
 
-    wide_parts = out / "_wide_parts"
-    res_parts = out / "_resource_parts"
-    if settings.disk_accumulate:
-        for d in (wide_parts, res_parts):
-            if d.exists():
-                for f in d.glob("*.parquet"):
-                    f.unlink()
-        _write_part_parquet(wide0, wide_parts / f"msrt_{msrt_ordered[0]}.parquet")
-        print(f"[INFO] DISK_ACCUMULATE: wide 分片已落盘 {wide_parts}")
-    else:
-        wide_frames: list[pd.DataFrame] = [wide0]
+        if settings.disk_accumulate:
+            _write_part_parquet(wide0, wide_parts / f"msrt_{first_msrt}.parquet")
+            print(f"[INFO] DISK_ACCUMULATE: wide 分片已落盘 {wide_parts}")
+        else:
+            wide_frames.append(wide0)
 
-    for shard in msrt_ordered:
-        if shard == msrt_ordered[0]:
-            continue
-        print(f"[INFO] ===== MSRT 分片 {shard} =====")
-        sx = settings_for_msrt_shard(settings, shard, out / "shards" / f"msrt_{shard}")
-        sx = replace(
-            sx,
-            msname_filter=anchor.msname,
-            only_first_msname=False,
-        )
-        try:
-            w, _ = build_wide_msrt(sx)
-            if w.empty:
-                print(f"[WARN] MSRT 分片 {shard} 在 msname 下无数据，跳过")
-            else:
-                if settings.disk_accumulate:
-                    _write_part_parquet(w, wide_parts / f"msrt_{shard}.parquet")
-                else:
-                    wide_frames.append(w)
-                save_merged_v2021(w, sx.output_dir_v2021)
-        except ValueError as e:
-            print(f"[WARN] MSRT 分片 {shard}: {e}")
+        for shard in msrt_ordered:
+            if shard == first_msrt:
+                continue
+            _process_msrt_shard(shard, anchor.msname, label="")
 
     if settings.disk_accumulate:
         wide_all = concat_parquet_parts(wide_parts, "MSRT wide")
     else:
         wide_all = concat_tables(wide_frames, "MSRT wide")
+
+    if wide_all.empty:
+        raise ValueError(
+            "所有 MSRT 分片在 MSNAME_FILTER 下均无数据。"
+            "请从 Part A 的 shard_anchor.json 复制完整 msname，"
+            "或运行 v2021-diagnose 查看各片覆盖。"
+        )
 
     res_frames: list[pd.DataFrame] = []
     if not res_ordered:

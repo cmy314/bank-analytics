@@ -148,8 +148,9 @@ def pivot_msrt(sub: pd.DataFrame, metric_col: str) -> pd.DataFrame:
 def _resolve_msname_for_subset(df: pd.DataFrame, settings: Settings) -> tuple[str, pd.DataFrame]:
     """确定本批 MSRT 使用的 msname，并返回过滤后的长表。"""
     if settings.msname_filter:
-        top_ms = settings.msname_filter
-        sub = df[df["msname"] == top_ms].copy()
+        top_ms = str(settings.msname_filter).strip()
+        ms_col = df["msname"].astype(str).str.strip()
+        sub = df.loc[ms_col == top_ms].copy()
         if sub.empty:
             raise ValueError(
                 f"MSNAME_FILTER 在当前 MSRT 分片中无匹配行: {top_ms[:48]}..."

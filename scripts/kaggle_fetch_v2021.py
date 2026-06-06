@@ -27,9 +27,19 @@ RES_SHARDS = list(range(4))
 MIN_CSV_BYTES = 50_000_000  # ~50MB; smaller files treated as corrupt
 
 
-def _run(cmd: list[str], *, label: str) -> None:
-    r = subprocess.run(cmd, capture_output=True, text=True)
+def _run(cmd: list[str], *, label: str, silent: bool = True) -> None:
+    """silent=True 时不向 Notebook 打印 wget/tar/gzip 进度。"""
+    kwargs: dict = {}
+    if silent:
+        kwargs["stdout"] = subprocess.DEVNULL
+        kwargs["stderr"] = subprocess.DEVNULL
+    else:
+        kwargs["capture_output"] = True
+        kwargs["text"] = True
+    r = subprocess.run(cmd, **kwargs)
     if r.returncode != 0:
+        if silent:
+            raise RuntimeError(f"{label} failed (exit {r.returncode})")
         err = (r.stderr or r.stdout or "").strip()
         raise RuntimeError(f"{label} failed (exit {r.returncode}): {err[:500]}")
 
@@ -51,8 +61,18 @@ def fetch_shard(kind: str, i: int) -> Path:
     tar = work / f"{name}.tar.gz"
     url = f"{OSS}/{kind}/{name}.tar.gz"
     _run(
-        ["wget", "--quiet", "--tries=5", "--timeout=600", "-O", str(tar), url],
+        [
+            "wget",
+            "--quiet",
+            "--no-verbose",
+            "--tries=5",
+            "--timeout=600",
+            "-O",
+            str(tar),
+            url,
+        ],
         label=f"wget {name}",
+        silent=True,
     )
     if tar.stat().st_size / 2**20 < 10:
         tar.unlink(missing_ok=True)

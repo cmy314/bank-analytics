@@ -16,6 +16,71 @@ import pandas as pd
 from bank_analytics.settings import Settings
 
 MERGE_KEYS = ["timestamp", "msname", "msinstanceid"]
+ASOF_BY_KEYS = ["msname", "msinstanceid"]
+
+
+def sort_for_merge_asof(df: pd.DataFrame, by_keys: list[str] | None = None) -> pd.DataFrame:
+    """merge_asof 前置：统一键类型、去重，并按 by + timestamp 排序。"""
+    if df.empty:
+        return df.copy()
+    keys = by_keys or ASOF_BY_KEYS
+    out = df.copy()
+    for col in keys:
+        if col not in out.columns:
+            raise ValueError(f"merge_asof 缺少列 {col}，实际列: {out.columns.tolist()}")
+        out[col] = out[col].astype(str)
+    out["timestamp"] = pd.to_numeric(out["timestamp"], errors="coerce")
+    out = out.dropna(subset=keys + ["timestamp"])
+    out = out.drop_duplicates(subset=keys + ["timestamp"], keep="first")
+    out["timestamp"] = out["timestamp"].astype("int64")
+    return out.sort_values(keys + ["timestamp"], kind="mergesort").reset_index(drop=True)
+
+
+def merge_asof_by_instance(
+    wide: pd.DataFrame,
+    res: pd.DataFrame,
+    *,
+    on: str = "timestamp",
+    by: list[str] | None = None,
+    tolerance: int,
+) -> pd.DataFrame:
+    """
+    按 (msname, msinstanceid) 分组做 merge_asof，避免全局 by= 排序在跨分片拼接后失败。
+    """
+    by = by or ASOF_BY_KEYS
+    wide_s = sort_for_merge_asof(wide, by)
+    res_s = sort_for_merge_asof(res, by)
+    if wide_s.empty:
+        return wide_s
+    res_value_cols = [c for c in res_s.columns if c not in set(by) | {on}]
+    parts: list[pd.DataFrame] = []
+    n_groups = 0
+    for key_vals, left_g in wide_s.groupby(by, sort=False):
+        n_groups += 1
+        if not isinstance(key_vals, tuple):
+            key_vals = (key_vals,)
+        mask = pd.Series(True, index=res_s.index)
+        for col, val in zip(by, key_vals):
+            mask &= res_s[col] == str(val)
+        right_g = res_s.loc[mask]
+        left_g = left_g.sort_values(on, kind="mergesort").reset_index(drop=True)
+        if right_g.empty:
+            parts.append(left_g)
+            continue
+        right_g = right_g.sort_values(on, kind="mergesort").reset_index(drop=True)
+        right_part = right_g[[on] + res_value_cols]
+        parts.append(
+            pd.merge_asof(
+                left_g,
+                right_part,
+                on=on,
+                direction="nearest",
+                tolerance=tolerance,
+            )
+        )
+    merged = pd.concat(parts, ignore_index=True)
+    print(f"[INFO] merge_asof 按实例分组: {n_groups} 组, shape={merged.shape}")
+    return merged
 
 
 @dataclass(frozen=True)
@@ -146,20 +211,10 @@ def join_wide_with_resource(
 
     strategy = settings.merge_strategy
     if strategy == "asof":
-        join_keys = ["msname", "msinstanceid"]
-        wide_s = wide.sort_values(join_keys + ["timestamp"])
-        res_s = res.sort_values(join_keys + ["timestamp"])
         tol = settings.merge_asof_tolerance_ms
-        merged = pd.merge_asof(
-            wide_s,
-            res_s,
-            on="timestamp",
-            by=join_keys,
-            direction="nearest",
-            tolerance=tol,
-        )
+        merged = merge_asof_by_instance(wide, res, tolerance=tol)
         print(
-            f"[INFO] merge_asof(tolerance={tol}ms) shape = {merged.shape} "
+            f"[INFO] merge_asof(tolerance={tol}ms) 完成 "
             f"(wide={len(wide)}, res={len(res)})"
         )
     else:

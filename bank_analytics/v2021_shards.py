@@ -27,6 +27,7 @@ from bank_analytics.v2021_data import (
     read_ms_resource_for_msname,
     read_msrt,
     save_merged_v2021,
+    sort_for_merge_asof,
 )
 
 ANCHOR_FILENAME = "shard_anchor.json"
@@ -196,7 +197,7 @@ def concat_tables(frames: list[pd.DataFrame], label: str) -> pd.DataFrame:
     combined = combined.drop_duplicates(subset=keys, keep="first")
     if len(combined) < before:
         print(f"[INFO] {label} 去重: {before} -> {len(combined)} 行")
-    return combined.sort_values("timestamp").reset_index(drop=True)
+    return sort_for_merge_asof(combined)
 
 
 def count_msname_in_msrt_shard(settings: Settings, shard: int, msname: str) -> int:

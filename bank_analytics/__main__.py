@@ -37,6 +37,15 @@ def main(argv: list[str] | None = None) -> int:
     p_shards.add_argument("--msrt-shards", default=os.getenv("V2021_MSRT_SHARDS"))
     p_shards.add_argument("--resource-shards", default=os.getenv("V2021_MS_RESOURCE_SHARDS"))
     sub.add_parser("v2021-diagnose", help="诊断各分片是否含 anchor msname（不训练）")
+    p_merge = sub.add_parser(
+        "v2021-merge-train",
+        help="合并多段 merged_v2021_multishard 后训练 IF+容量（12h 分两 Notebook 用）",
+    )
+    p_merge.add_argument(
+        "--parts",
+        required=True,
+        help="逗号分隔：各段输出目录或 merged_v2021_multishard.parquet 路径",
+    )
 
     args = parser.parse_args(argv)
 
@@ -52,13 +61,18 @@ def main(argv: list[str] | None = None) -> int:
         from bank_analytics.v2021_shards import parse_shard_list, resolve_msrt_and_resource_shards
 
         msrt, res = resolve_msrt_and_resource_shards(
-            args.msrt_shards, args.resource_shards, args.shards
+            args.msrt_shards, args.resource_shards, args.shards, settings=settings
         )
         run_v2021_shards(settings, msrt, res)
     elif args.cmd == "v2021-diagnose":
         from bank_analytics.v2021_diagnose import main_from_env
 
         main_from_env()
+    elif args.cmd == "v2021-merge-train":
+        from bank_analytics.pipelines.v2021_merge_12h import run_v2021_merge_train
+
+        parts = [p.strip() for p in args.parts.split(",") if p.strip()]
+        run_v2021_merge_train(load_settings(), parts)
     else:
         parser.error("unknown command")
 

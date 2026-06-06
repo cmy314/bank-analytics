@@ -137,10 +137,17 @@ def parse_shard_list(spec: str, *, kind: str = "msrt") -> list[int]:
     return [int(p) for p in parts]
 
 
+def has_preset_anchor(settings: Settings) -> bool:
+    """已固定 msname + msinstanceid 时，后半段分片可不包含 MSRT/Resource 的 0 号片。"""
+    return bool(settings.msname_filter and settings.msinstanceid_filter)
+
+
 def resolve_msrt_and_resource_shards(
     msrt_spec: str | None,
     resource_spec: str | None,
     fallback: str,
+    *,
+    settings: Settings | None = None,
 ) -> tuple[list[int], list[int]]:
     """解析 MSRT / MSResource 分片列表；未单独指定时共用 fallback。"""
     fb = parse_shard_list(fallback, kind="msrt")
@@ -150,10 +157,17 @@ def resolve_msrt_and_resource_shards(
         if resource_spec
         else parse_shard_list(fallback, kind="resource")
     )
-    if 0 not in msrt:
-        raise ValueError("MSRT 分片列表须包含 0，用于确定 anchor msname")
-    if 0 not in res:
-        raise ValueError("MSResource 分片列表须包含 0")
+    preset = settings is not None and has_preset_anchor(settings)
+    if 0 not in msrt and not preset:
+        raise ValueError(
+            "MSRT 分片列表须包含 0（用于确定 anchor msname），"
+            "或同时设置 MSNAME_FILTER 与 MSINSTANCEID_FILTER"
+        )
+    if 0 not in res and not preset:
+        raise ValueError(
+            "MSResource 分片列表须包含 0，"
+            "或同时设置 MSNAME_FILTER 与 MSINSTANCEID_FILTER"
+        )
     return msrt, res
 
 
@@ -272,21 +286,35 @@ def run_multi_shard_pipeline(
     msrt_ordered = sorted(dict.fromkeys(msrt_shards))
     res_ordered = sorted(dict.fromkeys(resource_shards))
 
-    s0 = settings_for_msrt_shard(settings, msrt_ordered[0], out / "shards" / f"msrt_{msrt_ordered[0]}")
+    first_msrt = msrt_ordered[0]
+    s0 = settings_for_msrt_shard(settings, first_msrt, out / "shards" / f"msrt_{first_msrt}")
     if settings.msname_filter:
         s0 = replace(s0, msname_filter=settings.msname_filter, only_first_msname=False)
     elif settings.only_first_msname:
         s0 = replace(s0, only_first_msname=True)
 
-    print("[INFO] ===== MSRT 分片 0: 确定 msname =====")
-    wide0, msname = build_wide_msrt(s0)
+    preset = has_preset_anchor(settings)
+    if preset:
+        print(f"[INFO] ===== MSRT 分片 {first_msrt}（已预设 anchor）=====")
+    else:
+        print(f"[INFO] ===== MSRT 分片 {first_msrt}: 确定 msname =====")
+
+    wide0, _msname = build_wide_msrt(s0)
     save_merged_v2021(wide0, s0.output_dir_v2021)
 
-    anchor = discover_anchor_from_wide(wide0, msrt_ordered, res_ordered)
-    if settings.msinstanceid_filter:
-        anchor = replace(anchor, msinstanceid=settings.msinstanceid_filter)
-    if settings.msname_filter:
-        anchor = replace(anchor, msname=settings.msname_filter)
+    if preset:
+        anchor = ShardAnchor(
+            msname=settings.msname_filter or "",
+            msinstanceid=settings.msinstanceid_filter or "",
+            msrt_shards=msrt_ordered,
+            ms_resource_shards=res_ordered,
+        )
+    else:
+        anchor = discover_anchor_from_wide(wide0, msrt_ordered, res_ordered)
+        if settings.msinstanceid_filter:
+            anchor = replace(anchor, msinstanceid=settings.msinstanceid_filter)
+        if settings.msname_filter:
+            anchor = replace(anchor, msname=settings.msname_filter)
 
     diagnose_shard_coverage(settings, anchor.msname, msrt_ordered, res_ordered)
 

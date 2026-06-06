@@ -12,12 +12,13 @@ Or paste the body of fetch_all_shards() into a cell.
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 from pathlib import Path
 
 OSS = "http://aliopentrace.oss-cn-beijing.aliyuncs.com/v2021MicroservicesTraces"
-DATA = Path("/kaggle/working/data/v2021")
+DATA = Path(os.getenv("DATA_DIR_V2021", "/kaggle/tmp/v2021_data"))
 TMP = Path("/kaggle/tmp/v2021_fetch")
 
 MSRT_SHARDS = list(range(8))
@@ -33,19 +34,13 @@ def _run(cmd: list[str], *, label: str) -> None:
         raise RuntimeError(f"{label} failed (exit {r.returncode}): {err[:500]}")
 
 
-def _disk_free_gb(path: Path) -> float:
-    usage = shutil.disk_usage(path)
-    return usage.free / 2**30
-
-
 def fetch_shard(kind: str, i: int) -> Path:
     name = f"{kind}_{i}"
     csv = DATA / f"{name}.csv"
     if csv.is_file() and csv.stat().st_size >= MIN_CSV_BYTES:
-        print(f"[skip] {name}.csv ({csv.stat().st_size / 2**20:.1f} MB)")
+        print(f"[skip] {name}")
         return csv
     if csv.is_file():
-        print(f"[del partial] {csv} ({csv.stat().st_size} bytes)")
         csv.unlink()
 
     work = TMP / name
@@ -55,16 +50,13 @@ def fetch_shard(kind: str, i: int) -> Path:
 
     tar = work / f"{name}.tar.gz"
     url = f"{OSS}/{kind}/{name}.tar.gz"
-    print(f"[wget] {name}  (working free {_disk_free_gb(DATA):.1f} GiB)")
     _run(
-        ["wget", "--tries=5", "--timeout=600", "-O", str(tar), url],
+        ["wget", "--quiet", "--tries=5", "--timeout=600", "-O", str(tar), url],
         label=f"wget {name}",
     )
-    tar_mb = tar.stat().st_size / 2**20
-    print(f"       tar {tar_mb:.1f} MB")
-    if tar_mb < 10:
+    if tar.stat().st_size / 2**20 < 10:
         tar.unlink(missing_ok=True)
-        raise RuntimeError(f"{name}: tar too small ({tar_mb:.1f} MB)")
+        raise RuntimeError(f"{name}: tar too small")
 
     _run(["gzip", "-t", str(tar)], label=f"gzip -t {name}")
     _run(["tar", "-xzf", str(tar), "-C", str(work)], label=f"tar {name}")
@@ -79,7 +71,7 @@ def fetch_shard(kind: str, i: int) -> Path:
         csv.unlink(missing_ok=True)
         raise RuntimeError(f"{name}: csv too small after extract")
 
-    print(f"[ok]   {csv.name} ({csv.stat().st_size / 2**20:.1f} MB)")
+    print(f"[ok] {name}")
     return csv
 
 
@@ -87,7 +79,6 @@ def cleanup_data_tars() -> None:
     DATA.mkdir(parents=True, exist_ok=True)
     for t in DATA.glob("*.tar.gz"):
         t.unlink()
-        print(f"[cleanup] removed {t.name} from DATA")
 
 
 def fetch_all_shards(
@@ -105,10 +96,8 @@ def fetch_all_shards(
     for i in res_shards:
         fetch_shard("MSResource", i)
 
-    print("\n=== done ===")
-    for p in sorted(DATA.glob("*.csv")):
-        print(f"  {p.name}  {p.stat().st_size / 2**20:.1f} MB")
-    print(f"working free: {_disk_free_gb(DATA):.1f} GiB")
+    n = len(list(DATA.glob("*.csv")))
+    print(f"[done] {n} csv in {DATA}")
 
 
 if __name__ == "__main__":

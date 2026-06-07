@@ -75,7 +75,7 @@ def fetch(kind, i):
     name = f"{kind}_{i}"
     csv = DATA / f"{name}.csv"
     if csv.is_file() and csv.stat().st_size >= MIN_CSV:
-        print(f"[skip] {name} {csv.stat().st_size/2**20:.1f}MB"); return
+        print(f"[skip] {name}"); return
     if csv.is_file():
         csv.unlink()
     work = TMP / name
@@ -83,15 +83,14 @@ def fetch(kind, i):
     work.mkdir(parents=True)
     tar = work / f"{name}.tar.gz"
     url = f"{OSS}/{kind}/{name}.tar.gz"
-    print(f"[wget] {name}")
-    run(["wget","--tries=5","--timeout=600","-O",str(tar),url], "wget")
+    run(["wget","--quiet","--tries=5","--timeout=600","-O",str(tar),url], "wget")
     run(["gzip","-t",str(tar)], "gzip")
     run(["tar","-xzf",str(tar),"-C",str(work)], "tar")
     hits = list(work.rglob(f"{name}.csv"))
     if not hits: raise FileNotFoundError(name)
     shutil.move(str(hits[0]), str(csv))
     shutil.rmtree(work, ignore_errors=True)
-    print(f"[ok] {csv.stat().st_size/2**20:.1f} MB")
+    print(f"[ok] {name}")
 
 DATA.mkdir(parents=True, exist_ok=True)
 for t in DATA.glob("*.tar.gz"):

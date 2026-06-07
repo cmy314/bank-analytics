@@ -2,7 +2,7 @@
 Alibaba v2021 — 数据处理层（与模型解耦）。
 
 职责：读 CSV → 透视 → merge → 派生列 → 落盘 merged_v2021；
-      选单实例 → 解析五维特征列（TPS/RT/ErrorRate/CPU/Memory）。
+      选单实例 → 解析四维特征列（QPS/RT/CPU/Memory）。
 """
 
 from __future__ import annotations
@@ -84,13 +84,12 @@ def merge_asof_by_instance(
 
 
 @dataclass(frozen=True)
-class FiveDimFeatureSpec:
-    """孤立森林输入的五列及其语义标签（供 v2021_model 使用）。"""
+class FourDimFeatureSpec:
+    """孤立森林输入的四列及其语义标签（供 v2021_model 使用）。"""
 
     feat_cols: list[str]
     feat_semantic: list[str]
     rt_key: str
-    error_rate_key: str
 
 
 @dataclass(frozen=True)
@@ -100,7 +99,7 @@ class V2021PreparedData:
     merged: pd.DataFrame
     msinstanceid: str
     instance_df: pd.DataFrame
-    feat_spec: FiveDimFeatureSpec
+    feat_spec: FourDimFeatureSpec
 
 
 def read_msrt(path: str, nrows: int | None) -> Tuple[pd.DataFrame, str]:
@@ -259,49 +258,38 @@ def _pick_primary_rt_column(df: pd.DataFrame) -> str | None:
     return rt_candidates[0] if rt_candidates else None
 
 
-def _ensure_error_rate_column(df: pd.DataFrame) -> str:
-    for c in ("error_rate", "http_error_rate", "failure_rate"):
-        if c in df.columns:
-            return c
-    df["error_rate"] = 0.0
-    print(
-        "[WARN] merged 数据中无 Error Rate 列，已使用 error_rate=0 占位。"
-        "运行时请从 Prometheus 导出真实错误率并合并进宽表。"
-    )
-    return "error_rate"
-
-
-def resolve_five_dim_features(instance_df: pd.DataFrame) -> FiveDimFeatureSpec:
+def resolve_four_dim_features(instance_df: pd.DataFrame) -> FourDimFeatureSpec:
     rt_key = _pick_primary_rt_column(instance_df)
     if rt_key is None:
-        raise RuntimeError("宽表中不存在 RT 列（HTTP_RT 或 *_RT），无法满足五维设定")
+        raise RuntimeError("宽表中不存在 RT 列（HTTP_RT 或 *_RT），无法满足四维设定")
 
-    er_key = _ensure_error_rate_column(instance_df)
     for mandatory in ("throughput_total", "instance_cpu_usage", "instance_memory_usage"):
         if mandatory not in instance_df.columns:
-            raise RuntimeError(f"五维所需列缺失: {mandatory}")
+            raise RuntimeError(f"四维所需列缺失: {mandatory}")
 
     feat_cols = [
         "throughput_total",
         rt_key,
-        er_key,
         "instance_cpu_usage",
         "instance_memory_usage",
     ]
     feat_semantic = [
-        "TPS(~sum MCR)",
+        "QPS(~sum MCR)",
         f"RT({rt_key})",
-        f"ErrorRate({er_key})",
         "CPU",
         "Memory",
     ]
-    print(f"[INFO] IF 输入五维 × 语义: {list(zip(feat_semantic, feat_cols))}")
-    return FiveDimFeatureSpec(
+    print(f"[INFO] IF 输入四维 × 语义: {list(zip(feat_semantic, feat_cols))}")
+    return FourDimFeatureSpec(
         feat_cols=feat_cols,
         feat_semantic=feat_semantic,
         rt_key=rt_key,
-        error_rate_key=er_key,
     )
+
+
+# 兼容旧引用
+FiveDimFeatureSpec = FourDimFeatureSpec
+resolve_five_dim_features = resolve_four_dim_features
 
 
 def pick_instance_frame(
@@ -326,9 +314,9 @@ def prepare_from_merged(
     merged: pd.DataFrame,
     settings: Settings,
 ) -> V2021PreparedData:
-    """在已有宽表上选实例并解析五维特征（多分片拼接后用）。"""
+    """在已有宽表上选实例并解析四维特征（多分片拼接后用）。"""
     inst, instance_df = pick_instance_frame(merged, settings)
-    feat_spec = resolve_five_dim_features(instance_df)
+    feat_spec = resolve_four_dim_features(instance_df)
     return V2021PreparedData(
         merged=merged,
         msinstanceid=inst,
@@ -338,7 +326,7 @@ def prepare_from_merged(
 
 
 def prepare_v2021_data(settings: Settings, output_dir: str | os.PathLike[str]) -> V2021PreparedData:
-    """完整数据处理：merge → 落盘 → 单实例 → 五维特征。"""
+    """完整数据处理：merge → 落盘 → 单实例 → 四维特征。"""
     merged = build_merged_v2021(settings)
     save_merged_v2021(merged, output_dir)
     prepared = prepare_from_merged(merged, settings)

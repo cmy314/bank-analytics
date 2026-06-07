@@ -18,16 +18,45 @@ from bank_analytics.v2021_model import (
 from bank_analytics.v2021_shards import MERGED_MULTISHARD_BASENAME, save_multishard_merged
 
 
-def _load_merged_part(path: Path) -> pd.DataFrame:
-    if path.suffix == ".parquet":
-        return pd.read_parquet(path)
-    if path.suffix == ".csv":
-        return pd.read_csv(path)
+def _resolve_merged_file(path: Path) -> Path:
+    """目录、zip 解压子目录或直链 parquet/csv 均可解析。"""
+    path = Path(path)
+    if path.is_file():
+        return path
+    if not path.is_dir():
+        raise FileNotFoundError(f"路径不存在: {path}")
+
     for ext in (".parquet", ".csv"):
-        candidate = path.parent / f"{MERGED_MULTISHARD_BASENAME}{ext}"
-        if candidate.is_file():
-            return _load_merged_part(candidate)
-    raise FileNotFoundError(f"未找到 merged 宽表: {path}")
+        direct = path / f"{MERGED_MULTISHARD_BASENAME}{ext}"
+        if direct.is_file():
+            return direct
+
+    hits: list[Path] = []
+    for ext in (".parquet", ".csv"):
+        hits.extend(path.rglob(f"{MERGED_MULTISHARD_BASENAME}{ext}"))
+    if hits:
+        return sorted(hits)[0]
+
+    parquets = sorted(path.rglob("*.parquet"))
+    if len(parquets) == 1:
+        return parquets[0]
+    if parquets:
+        print(f"[WARN] 目录 {path} 含多个 parquet，使用 {parquets[0]}")
+        return parquets[0]
+
+    listing = [str(p.relative_to(path)) for p in path.rglob("*") if p.is_file()]
+    raise FileNotFoundError(
+        f"未找到 merged 宽表: {path}；目录内文件: {listing[:20]}"
+    )
+
+
+def _load_merged_part(path: Path) -> pd.DataFrame:
+    resolved = _resolve_merged_file(Path(path))
+    if resolved.suffix == ".parquet":
+        return pd.read_parquet(resolved)
+    if resolved.suffix == ".csv":
+        return pd.read_csv(resolved)
+    raise FileNotFoundError(f"不支持的 merged 格式: {resolved}")
 
 
 def merge_merged_parts(part_paths: list[str | os.PathLike[str]]) -> pd.DataFrame:

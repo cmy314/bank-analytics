@@ -46,6 +46,16 @@ def main(argv: list[str] | None = None) -> int:
         required=True,
         help="逗号分隔：各段输出目录或 merged_v2021_multishard.parquet 路径",
     )
+    p_infer = sub.add_parser(
+        "v2021-infer",
+        help="Prometheus 导出 CSV + if_v2021.joblib → 离线告警表",
+    )
+    p_infer.add_argument("--csv", required=True)
+    p_infer.add_argument("--model", required=True)
+    p_infer.add_argument("--out", default="output/infer_alerts.csv")
+    p_infer.add_argument("--rt-unit", choices=["auto", "ms", "s"], default="auto")
+    p_infer.add_argument("--cpu-unit", choices=["auto", "percent", "ratio"], default="auto")
+    p_infer.add_argument("--memory-unit", choices=["auto", "percent", "ratio"], default="auto")
 
     args = parser.parse_args(argv)
 
@@ -73,6 +83,25 @@ def main(argv: list[str] | None = None) -> int:
 
         parts = [p.strip() for p in args.parts.split(",") if p.strip()]
         run_v2021_merge_train(load_settings(), parts)
+    elif args.cmd == "v2021-infer":
+        from bank_analytics.infer_joblib import infer_alerts_from_csv, save_infer_alerts, summarize_alerts
+
+        cpu_unit = "ratio" if args.cpu_unit == "ratio" else args.cpu_unit
+        mem_unit = "ratio" if args.memory_unit == "ratio" else args.memory_unit
+        df = infer_alerts_from_csv(
+            args.csv,
+            args.model,
+            rt_unit=args.rt_unit,
+            cpu_unit=cpu_unit,
+            memory_unit=mem_unit,
+        )
+        out = save_infer_alerts(df, args.out)
+        stats = summarize_alerts(df)
+        print(f"[INFO] 推理完成 → {out}")
+        print(
+            f"[INFO] 行数={stats['rows']}, IF异常={stats['if_anomaly']}, "
+            f"P95规则={stats['rule_alert']}, 合并告警={stats['combined_alert']}"
+        )
     else:
         parser.error("unknown command")
 

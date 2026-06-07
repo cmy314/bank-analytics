@@ -1,7 +1,7 @@
 """
 Alibaba v2021 — 模型层（与数据处理解耦）。
 
-职责：五维 Isolation Forest 训练/打分、P95 规则、joblib 持久化、结果图。
+职责：四维 Isolation Forest 训练/打分、P95 规则、joblib 持久化、结果图。
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ import pandas as pd
 from sklearn.ensemble import IsolationForest
 from sklearn.preprocessing import StandardScaler
 
-from bank_analytics.v2021_data import FiveDimFeatureSpec
+from bank_analytics.v2021_data import FourDimFeatureSpec
 
 
 @dataclass
@@ -23,30 +23,36 @@ class IsolationForestRunResult:
     scored_df: pd.DataFrame
     model: IsolationForest
     scaler: StandardScaler
-    feat_spec: FiveDimFeatureSpec
+    feat_spec: FourDimFeatureSpec
     split_idx: int
     msinstanceid: str
+    p95_thresholds: dict[str, float] | None = None
+
+
+def compute_p95_thresholds(
+    df: pd.DataFrame,
+    split_idx: int,
+    rt_key: str,
+) -> dict[str, float]:
+    train = df.iloc[:split_idx]
+    return {
+        "cpu": float(train["instance_cpu_usage"].quantile(0.95)),
+        "rt": float(train[rt_key].quantile(0.95)),
+    }
 
 
 def _apply_p95_rule_alerts(
     df: pd.DataFrame,
-    split_idx: int,
+    thresholds: dict[str, float],
     rt_key: str,
-    er_key: str,
 ) -> pd.Series:
-    train = df.iloc[:split_idx]
-    train_cpu_thr = train["instance_cpu_usage"].quantile(0.95)
-    train_rt_thr = train[rt_key].quantile(0.95)
-    rule = (df["instance_cpu_usage"] > train_cpu_thr) | (df[rt_key] > train_rt_thr)
-    if float(df[er_key].max()) > 0.0:
-        train_er_thr = train[er_key].quantile(0.95)
-        rule = rule | (df[er_key] > train_er_thr)
+    rule = (df["instance_cpu_usage"] > thresholds["cpu"]) | (df[rt_key] > thresholds["rt"])
     return rule.astype(int)
 
 
 def run_isolation_forest(
     instance_df: pd.DataFrame,
-    feat_spec: FiveDimFeatureSpec,
+    feat_spec: FourDimFeatureSpec,
     msinstanceid: str,
     contamination: float,
     train_ratio: float = 0.8,
@@ -64,11 +70,10 @@ def run_isolation_forest(
     )
     model.fit(X_scaled[:split_idx])
 
+    p95_thresholds = compute_p95_thresholds(d, split_idx, feat_spec.rt_key)
     d["if_pred"] = model.predict(X_scaled)
     d["if_score"] = model.decision_function(X_scaled)
-    d["rule_alert"] = _apply_p95_rule_alerts(
-        d, split_idx, feat_spec.rt_key, feat_spec.error_rate_key
-    )
+    d["rule_alert"] = _apply_p95_rule_alerts(d, p95_thresholds, feat_spec.rt_key)
 
     return IsolationForestRunResult(
         scored_df=d,
@@ -77,20 +82,26 @@ def run_isolation_forest(
         feat_spec=feat_spec,
         split_idx=split_idx,
         msinstanceid=msinstanceid,
+        p95_thresholds=p95_thresholds,
     )
 
 
 def save_model_artifact(result: IsolationForestRunResult, output_dir: str | os.PathLike[str]) -> str:
     path = os.path.join(output_dir, "if_v2021.joblib")
+    p95 = getattr(result, "p95_thresholds", None) or compute_p95_thresholds(
+        result.scored_df, result.split_idx, result.feat_spec.rt_key
+    )
     joblib.dump(
         {
             "model": result.model,
             "scaler": result.scaler,
             "feat_cols": result.feat_spec.feat_cols,
             "feat_semantic": result.feat_spec.feat_semantic,
+            "rt_key": result.feat_spec.rt_key,
             "msinstanceid_sample": result.msinstanceid,
             "split_idx": result.split_idx,
-            "note": "五维对齐: TPS/RT/ErrorRate/CPU/Memory",
+            "p95_thresholds": p95,
+            "note": "四维对齐: QPS/RT/CPU/Memory",
         },
         path,
     )

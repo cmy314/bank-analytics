@@ -74,16 +74,28 @@ python -m bank_analytics v2021-shards --shards 0,1,2
 | 文件 | 含义 |
 |------|------|
 | `merged_v2021.parquet` / `.csv` | 合并宽表 |
-| `if_v2021.joblib` | Scaler + 孤立森林 |
+| `if_v2021.joblib` | Scaler + 孤立森林（**四维**：QPS/RT/CPU/Memory） |
 | `fig_v2021_*.png` | 吞吐、IF 得分 |
 | `capacity_forecast_v2021.csv` | 容量预测与触线标记 |
 | `capacity_model_v2021.txt` | α、β、γ、δ 系数 |
 | `fig_v2021_capacity.png` | CPU 实际 vs QPS 驱动预测 |
 | `fig_v2021_prophet_cpu_optional.png` | 仅当 `TRY_PROPHET_V2021=true` |
+| `infer_alerts.csv` | 压测后 Prometheus CSV 推理告警表 |
+
+## 五、压测后离线推理（Prometheus CSV）
+
+```bash
+python infer_from_joblib.py \
+  --csv output/prometheus_txn.csv \
+  --model output/v2021/if_v2021.joblib \
+  --out output/infer_alerts.csv
+```
+
+详见 **[docs/Prometheus-CSV推理.md](docs/Prometheus-CSV推理.md)**。旧五维 joblib 需重新 `v2021-merge-train`。
 
 ---
 
-## 五、环境变量
+## 六、环境变量
 
 | 变量 | 含义 |
 |------|------|
